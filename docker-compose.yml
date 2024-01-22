@@ -1,0 +1,84 @@
+version: "3.9"
+
+services:
+  # postgres
+  postgres:
+    container_name: aat-postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file:
+      - .env
+    volumes:
+      - aat-postgres:/var/lib/postgresql/data
+    networks:
+      - aat-network
+
+  # minio
+  minio:
+    container_name: aat-minio
+    image: minio/minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-storage:/data
+    environment:
+      MINIO_ACCESS_KEY: blQ3xwyhmgVSil41otTG
+      MINIO_SECRET_KEY: bnlnY6BYVls7BVOIAhj7LUKF5htiTRkJG4RhdMQJ
+    command: server --console-address ":9001" /data
+    networks:
+      - aat-network
+
+  # redis
+  redis:
+    container_name: aat-redis
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - aat-network
+
+  # zookeeper
+  zookeeper:
+    container_name: aat-zookeeper
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: unless-stopped
+    ports:
+      - "22181:2181"
+    networks:
+      - aat-network
+
+  # kafka
+  kafka:
+    container_name: aat-kafka
+    image: confluentinc/cp-kafka:latest
+    restart: unless-stopped
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on:
+      - zookeeper
+    networks:
+      - aat-network
+
+volumes:
+  aat-postgres:
+    driver: local
+  minio-storage: { }
+
+networks:
+  aat-network:
+    driver: bridge
