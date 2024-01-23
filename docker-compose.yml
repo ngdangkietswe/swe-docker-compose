@@ -4,12 +4,13 @@ services:
   # postgres
   postgres:
     container_name: aat-postgres
-    image: postgres:16-alpine
+    image: postgres:${POSTGRES_VERSION}
     restart: unless-stopped
     ports:
-      - "5432:5432"
-    env_file:
-      - .env
+      - "${POSTGRES_PORT}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - aat-postgres:/var/lib/postgresql/data
     networks:
@@ -21,7 +22,7 @@ services:
     image: minio/minio
     restart: unless-stopped
     ports:
-      - "9000:9000"
+      - "${MINIO_PORT}:9000"
       - "9001:9001"
     volumes:
       - minio-storage:/data
@@ -35,10 +36,10 @@ services:
   # redis
   redis:
     container_name: aat-redis
-    image: redis:7.2-alpine
+    image: redis:${REDIS_VERSION}
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT}:6379"
     command: redis-server --loglevel warning
     healthcheck:
       test: [ "CMD-SHELL", "redis-cli ping | grep PONG" ]
@@ -50,41 +51,40 @@ services:
 
   # zookeeper
   zookeeper:
+    image: debezium/zookeeper:${DEBEZIUM_VERSION}
     container_name: aat-zookeeper
-    image: debezium/zookeeper:2.5.0.Final
     restart: unless-stopped
     ports:
       - "2181:2181"
       - "2888:2888"
       - "3888:3888"
     environment:
-      LOG_LEVEL: WARN
-    networks:
-      - aat-network
+      SERVER_ID: "1"
+      SERVER_COUNT: "1"
+      LOG_LEVEL: "WARN"
 
   # kafka
   kafka:
+    image: debezium/kafka:${DEBEZIUM_VERSION}
     container_name: aat-kafka
-    image: debezium/kafka:2.5.0.Final
     restart: unless-stopped
-    ports:
-      - "9092:9092"
-      - "29092:29092"
-    environment:
-      BROKER_ID: 1
-      ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://aat-kafka:29092,PLAINTEXT_HOST://aat-kafka:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://aat-kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
-      KAFKA_LOG_RETENTION_HOURS: 24
-      KAFKA_MESSAGE_MAX_BYTES: 4194304
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      LOG_LEVEL: WARN
-      CREATE_TOPICS: debezium_connect_config:1:1:compact,debezium_connect_offset:1:1:compact,debezium_connect_status:1:1:compact
     depends_on:
       zookeeper:
         condition: service_started
+    ports:
+      - "${KAFKA_PORT}:9092"
+      - "29092:29092"
+    environment:
+      NODE_ID: "1"
+      ZOOKEEPER_CONNECT: "aat-zookeeper:2181"
+      LOG_LEVEL: "WARN"
+      KAFKA_LOG_RETENTION_HOURS: "1"
+      KAFKA_LISTENERS: "PLAINTEXT://aat-kafka:29092,PLAINTEXT_HOST://aat-kafka:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://aat-kafka:29092,PLAINTEXT_HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CREATE_TOPICS: "debezium_connect_config:1:1:compact,debezium_connect_offsets:1:1:compact,debezium_connect_status:1:1:compact"
     healthcheck:
       test:
         [
@@ -97,8 +97,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - aat-network
 
   # kafka ui
   kafka-ui:
@@ -114,30 +112,34 @@ services:
             docker-kafka-server:
               properties:
                 bootstrap.servers: "aat-kafka:29092"
+          ui-options:
+            topic-data:
+              sort: NEWEST
+    depends_on:
+      - kafka
 
   # debezium
-  cdc:
-    container_name: aat-cdc
-    image: debezium/connect:2.5.0.Final
+  debezium:
+    image: debezium/connect:${DEBEZIUM_VERSION}
+    container_name: aat-debezium
     restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
     ports:
-      - "8083:8083"
+      - "${DEBEZIUM_PORT}:8083"
     environment:
-      BOOTSTRAP_SERVERS: aat-kafka:29092
-      CONFIG_STORAGE_TOPIC: debezium_connect_config
-      OFFSET_STORAGE_TOPIC: debezium_connect_offset
-      STATUS_STORAGE_TOPIC: debezium_connect_status
-      LOG_LEVEL: WARN
+      BOOTSTRAP_SERVERS: "aat-kafka:29092"
+      GROUP_ID: "1"
+      CONFIG_STORAGE_TOPIC: "debezium-config"
+      OFFSET_STORAGE_TOPIC: "debezium-offset"
+      STATUS_STORAGE_TOPIC: "debezium-status"
+      LOG_LEVEL: "WARN"
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8083/connectors" ]
       interval: 10s
       timeout: 5s
       retries: 5
-    depends_on:
-      kafka:
-        condition: service_healthy
-    networks:
-      - aat-network
 
 volumes:
   aat-postgres:
