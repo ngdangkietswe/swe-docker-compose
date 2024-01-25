@@ -62,6 +62,8 @@ services:
       SERVER_ID: "1"
       SERVER_COUNT: "1"
       LOG_LEVEL: "WARN"
+    networks:
+      - aat-network
 
   # kafka
   kafka:
@@ -97,6 +99,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - aat-network
 
   # kafka ui
   kafka-ui:
@@ -117,6 +121,8 @@ services:
               sort: NEWEST
     depends_on:
       - kafka
+    networks:
+      - aat-network
 
   # debezium
   debezium:
@@ -131,15 +137,17 @@ services:
     environment:
       BOOTSTRAP_SERVERS: "aat-kafka:29092"
       GROUP_ID: "1"
-      CONFIG_STORAGE_TOPIC: "debezium-config"
-      OFFSET_STORAGE_TOPIC: "debezium-offset"
-      STATUS_STORAGE_TOPIC: "debezium-status"
+      CONFIG_STORAGE_TOPIC: "debezium_connect_config"
+      OFFSET_STORAGE_TOPIC: "debezium_connect_offset"
+      STATUS_STORAGE_TOPIC: "debezium_connect_status"
       LOG_LEVEL: "WARN"
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8083/connectors" ]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - aat-network
 
 volumes:
   aat-postgres:
