@@ -11,6 +11,12 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    command: [ 'postgres', '-c', 'wal_level=logical' ]
+    healthcheck:
+      test: [ 'CMD', 'psql', '-U', 'postgres', '-c', 'SELECT 1' ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - aat-postgres:/var/lib/postgresql/data
     networks:
@@ -130,6 +136,8 @@ services:
     container_name: aat-debezium
     restart: unless-stopped
     depends_on:
+      postgres:
+        condition: service_healthy
       kafka:
         condition: service_healthy
     ports:
@@ -142,10 +150,35 @@ services:
       STATUS_STORAGE_TOPIC: "debezium_connect_status"
       LOG_LEVEL: "WARN"
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8083/connectors" ]
+      test:
+        [
+          'CMD',
+          'curl',
+          '--silent',
+          '--fail',
+          '-X',
+          'GET',
+          'http://localhost:8083/connectors',
+        ]
+      start_period: 10s
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - aat-network
+
+  # debezium ui
+  debezium-ui:
+    image: debezium/debezium-ui:latest
+    container_name: aat-debezium-ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CONNECT_URIS: "http://aat-debezium:8083"
+    depends_on:
+      debezium:
+        condition: service_healthy
     networks:
       - aat-network
 
