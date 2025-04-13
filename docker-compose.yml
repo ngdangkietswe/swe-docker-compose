@@ -1,3 +1,8 @@
+# docker-compose.yml
+# Defines a multi-service architecture for a scalable application stack.
+# Services include PostgreSQL, MinIO, Redis, Zookeeper, Kafka, Debezium, Keycloak, Elasticsearch, and Temporal.
+# Version: 3.9 ensures compatibility with modern Docker Compose features.
+
 version: "3.9"
 
 services:
@@ -153,12 +158,6 @@ services:
       OFFSET_STORAGE_TOPIC: "debezium_connect_offset"
       STATUS_STORAGE_TOPIC: "debezium_connect_status"
       LOG_LEVEL: "WARN"
-    healthcheck:
-      test: [ 'CMD', 'curl', '--silent', '--fail', 'http://localhost:8083/connectors' ]
-      start_period: 10s
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - swe-network
 
@@ -172,8 +171,7 @@ services:
     environment:
       KAFKA_CONNECT_URIS: "http://swe-debezium:8083"
     depends_on:
-      debezium:
-        condition: service_healthy
+      - debezium
     networks:
       - swe-network
 
@@ -199,6 +197,8 @@ services:
       KC_LOG_LEVEL: info
       KC_METRICS_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
+      KC_CACHE: local
+      KC_FEATURES: token-exchange,update-email,admin-fine-grained-authz
       KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
     depends_on:
@@ -211,6 +211,64 @@ services:
       retries: 5
     networks:
       - swe-network
+
+  # Elasticsearch
+  elasticsearch:
+    image: elasticsearch:${ELASTICSEARCH_VERSION:-8.6.2}
+    container_name: temporal-elasticsearch
+    environment:
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=512mb
+      - cluster.routing.allocation.disk.watermark.high=256mb
+      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      - xpack.security.enabled=false
+    networks:
+      - swe-network
+    expose:
+      - 9200
+    volumes:
+      - /var/lib/elasticsearch/data
+
+  # Temporal
+  temporal:
+    image: temporalio/auto-setup:${TEMPORAL_VERSION:-1.20.0}
+    container_name: temporal
+    depends_on:
+      - elasticsearch
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=123456
+      - POSTGRES_SEEDS=swe-postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - ENABLE_ES=true
+      - ES_SEEDS=elasticsearch
+      - ES_VERSION=v8
+    networks:
+      - swe-network
+    ports:
+      - "7233:7233"
+    labels:
+      kompose.volume.type: configMap
+    volumes:
+      - ./temporalconfig:/etc/temporal/config/dynamicconfig
+
+  # Temporal Admin Tools
+  temporal-ui:
+    image: temporalio/ui:${TEMPORAL_UI_VERSION:-2.10.3}
+    container_name: temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3001
+    networks:
+      - swe-network
+    ports:
+      - "8081:8080"
 
 volumes:
   swe-postgres:
