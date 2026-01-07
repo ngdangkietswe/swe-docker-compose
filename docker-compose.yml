@@ -1,125 +1,148 @@
-# docker-compose.yml
-# Defines a multi-service architecture for a scalable application stack.
-# Services include PostgreSQL, MinIO, Redis, Zookeeper, Kafka, Debezium, Keycloak, Elasticsearch, and Temporal.
-# Version: 3.9 ensures compatibility with modern Docker Compose features.
-
-version: "3.9"
-
 services:
+
+  # =======================
   # PostgreSQL
+  # =======================
   postgres:
+    profiles:
+      - core
+    image: postgres:${POSTGRES_VERSION:-15}
     container_name: swe-postgres
-    image: postgres:${POSTGRES_VERSION}
     restart: unless-stopped
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-123456}
-    command: [ 'postgres', '-c', 'wal_level=logical' ]
-    healthcheck:
-      test: [ 'CMD', 'pg_isready', '-U', '${POSTGRES_USER:-postgres}' ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123456
+    command: [ "postgres", "-c", "wal_level=logical" ]
     volumes:
       - swe-postgres:/var/lib/postgresql/data
-    networks:
-      - swe-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
 
-  # MinIO
-  minio:
-    container_name: swe-minio
-    image: minio/minio
+  # =======================
+  # MongoDB
+  # =======================
+  mongo:
+    profiles:
+      - nosql
+    image: mongo:${MONGO_VERSION:-6}
+    container_name: swe-mongo
     restart: unless-stopped
     ports:
-      - "${MINIO_PORT:-9000}:9000"
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: 123456
+    volumes:
+      - swe-mongo:/data/db
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
+
+  # =======================
+  # MinIO
+  # =======================
+  minio:
+    profiles:
+      - s3
+    image: minio/minio
+    container_name: swe-minio
+    restart: unless-stopped
+    command: server --console-address ":9001" /data
+    ports:
+      - "9000:9000"
       - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
     volumes:
       - minio-storage:/data
-    environment:
-      MINIO_ACCESS_KEY: blQ3xwyhmgVSil41otTG
-      MINIO_SECRET_KEY: bnlnY6BYVls7BVOIAhj7LUKF5htiTRkJG4RhdMQJ
-    command: server --console-address ":9001" /data
-    healthcheck:
-      test: [ 'CMD', 'curl', '--silent', '--fail', 'http://localhost:9000/minio/health/live' ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - swe-network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
 
+  # =======================
   # Redis
+  # =======================
   redis:
+    profiles:
+      - core
+    image: redis:${REDIS_VERSION:-7}
     container_name: swe-redis
-    image: redis:${REDIS_VERSION}
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
-    command: redis-server --loglevel warning
-    healthcheck:
-      test: [ 'CMD-SHELL', 'redis-cli ping | grep PONG' ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - swe-network
+      - "6379:6379"
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks: [ swe-network ]
 
+  # =======================
   # Zookeeper
+  # =======================
   zookeeper:
-    image: debezium/zookeeper:${DEBEZIUM_VERSION}
+    profiles:
+      - core
+    image: debezium/zookeeper:${DEBEZIUM_VERSION:-2.5}
     container_name: swe-zookeeper
     restart: unless-stopped
     ports:
       - "2181:2181"
-      - "2888:2888"
-      - "3888:3888"
     environment:
-      SERVER_ID: "1"
-      SERVER_COUNT: "1"
-      LOG_LEVEL: "WARN"
-    healthcheck:
-      test: [ 'CMD', 'echo', 'stat', '|', 'nc', 'localhost', '2181' ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - swe-network
+      JVMFLAGS: "-Xms256m -Xmx256m"
+      LOG_LEVEL: WARN
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
 
+  # =======================
   # Kafka
+  # =======================
   kafka:
-    image: debezium/kafka:${DEBEZIUM_VERSION}
+    profiles:
+      - core
+    image: debezium/kafka:${DEBEZIUM_VERSION:-2.5}
     container_name: swe-kafka
     restart: unless-stopped
-    depends_on:
-      zookeeper:
-        condition: service_healthy
+    depends_on: [ zookeeper ]
     ports:
-      - "${KAFKA_PORT:-9092}:9092"
+      - "9092:9092"
       - "29092:29092"
     environment:
-      NODE_ID: "1"
-      ZOOKEEPER_CONNECT: "swe-zookeeper:2181"
-      LOG_LEVEL: "WARN"
-      KAFKA_LOG_RETENTION_HOURS: "1"
-      KAFKA_LISTENERS: "PLAINTEXT://swe-kafka:29092,PLAINTEXT_HOST://swe-kafka:9092"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://swe-kafka:29092,PLAINTEXT_HOST://localhost:9092"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
-      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      ZOOKEEPER_CONNECT: swe-zookeeper:2181
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      CREATE_TOPICS: "debezium_connect_config:1:1:compact,debezium_connect_offsets:1:1:compact,debezium_connect_status:1:1:compact"
-    healthcheck:
-      test: [ 'CMD', './bin/kafka-topics.sh', '--list', '--bootstrap-server', 'swe-kafka:29092' ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - swe-network
+      KAFKA_LOG_RETENTION_HOURS: "1"
+      KAFKA_LISTENERS: PLAINTEXT://swe-kafka:29092,PLAINTEXT_HOST://swe-kafka:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://swe-kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    networks: [ swe-network ]
 
-  # Kafka UI
+  # =======================
+  # Kafka UI (AKHQ)
+  # =======================
   kafka-ui:
-    container_name: swe-kafka-ui
+    profiles:
+      - ui
     image: tchiotludo/akhq:0.24.0
+    container_name: swe-kafka-ui
     restart: unless-stopped
     ports:
       - "8088:8080"
@@ -127,153 +150,140 @@ services:
       AKHQ_CONFIGURATION: |
         akhq:
           connections:
-            docker-kafka-server:
+            docker:
               properties:
                 bootstrap.servers: "swe-kafka:29092"
-          ui-options:
-            topic-data:
-              sort: NEWEST
-    depends_on:
-      kafka:
-        condition: service_healthy
-    networks:
-      - swe-network
+    depends_on: [ kafka ]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks: [ swe-network ]
 
+  # =======================
   # Debezium
+  # =======================
   debezium:
-    image: debezium/connect:${DEBEZIUM_VERSION}
+    profiles:
+      - cdc
+    image: debezium/connect:${DEBEZIUM_VERSION:-2.5}
     container_name: swe-debezium
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
+    depends_on: [ kafka, postgres ]
     ports:
-      - "${DEBEZIUM_PORT:-8083}:8083"
+      - "8083:8083"
     environment:
-      BOOTSTRAP_SERVERS: "swe-kafka:29092"
+      BOOTSTRAP_SERVERS: swe-kafka:29092
       GROUP_ID: "1"
-      CONFIG_STORAGE_TOPIC: "debezium_connect_config"
-      OFFSET_STORAGE_TOPIC: "debezium_connect_offset"
-      STATUS_STORAGE_TOPIC: "debezium_connect_status"
-      LOG_LEVEL: "WARN"
-    networks:
-      - swe-network
+      CONFIG_STORAGE_TOPIC: debezium_connect_config
+      OFFSET_STORAGE_TOPIC: debezium_connect_offset
+      STATUS_STORAGE_TOPIC: debezium_connect_status
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
 
-  # Debezium UI
-  debezium-ui:
-    image: debezium/debezium-ui:latest
-    container_name: swe-debezium-ui
-    restart: unless-stopped
-    ports:
-      - "6969:8080"
-    environment:
-      KAFKA_CONNECT_URIS: "http://swe-debezium:8083"
-    depends_on:
-      - debezium
-    networks:
-      - swe-network
-
+  # =======================
   # Keycloak
+  # =======================
   keycloak:
-    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION}
+    profiles:
+      - auth
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION:-24}
     container_name: swe-keycloak
-    ports:
-      - "${KEYCLOAK_PORT:-8080}:8080"
-      - "8443:8443"
     command: start-dev
+    ports:
+      - "8080:8080"
     environment:
-      JAVA_OPTS_APPEND: -Dkeycloak.profile.feature.upload_scripts=enabled
       KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://swe-postgres:5432/SweKeycloak
-      KC_DB_USERNAME: ${POSTGRES_USER:-postgres}
-      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-123456}
-      KC_DB_SCHEMA: swekeycloak
-      KC_HOSTNAME: localhost
-      KC_HOSTNAME_PORT: 8080
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_HTTPS: "false"
-      KC_LOG_LEVEL: info
-      KC_METRICS_ENABLED: "true"
-      KC_HEALTH_ENABLED: "true"
-      KC_CACHE: local
-      KC_FEATURES: token-exchange,update-email,admin-fine-grained-authz
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: [ 'CMD', 'curl', '--silent', '--fail', 'http://localhost:8080/realms/master' ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - swe-network
+      KC_DB_URL: jdbc:postgresql://swe-postgres:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: 123456
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      JAVA_OPTS_APPEND: "-Xms256m -Xmx256m"
+    depends_on: [ postgres ]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
 
+  # =======================
   # Elasticsearch
+  # =======================
   elasticsearch:
+    profiles:
+      - elk
     image: elasticsearch:${ELASTICSEARCH_VERSION:-8.6.2}
     container_name: temporal-elasticsearch
     environment:
-      - cluster.routing.allocation.disk.threshold_enabled=true
-      - cluster.routing.allocation.disk.watermark.low=512mb
-      - cluster.routing.allocation.disk.watermark.high=256mb
-      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
-      - discovery.type=single-node
-      - ES_JAVA_OPTS=-Xms256m -Xmx256m
-      - xpack.security.enabled=false
-    networks:
-      - swe-network
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms256m -Xmx256m"
     expose:
-      - 9200
-    volumes:
-      - /var/lib/elasticsearch/data
+      - "9200"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
 
+  # =======================
   # Temporal
+  # =======================
   temporal:
+    profiles:
+      - elk
     image: temporalio/auto-setup:${TEMPORAL_VERSION:-1.20.0}
     container_name: temporal
-    depends_on:
-      - elasticsearch
-    environment:
-      - DB=postgresql
-      - DB_PORT=5432
-      - POSTGRES_USER=postgres
-      - POSTGRES_PWD=123456
-      - POSTGRES_SEEDS=swe-postgres
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
-      - ENABLE_ES=true
-      - ES_SEEDS=elasticsearch
-      - ES_VERSION=v8
-    networks:
-      - swe-network
+    depends_on: [ postgres, elasticsearch ]
     ports:
       - "7233:7233"
-    labels:
-      kompose.volume.type: configMap
+    environment:
+      DB: postgresql
+      DB_PORT: 5432
+      POSTGRES_SEEDS: swe-postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: 123456
+      ENABLE_ES: "true"
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development-sql.yaml
+      ES_SEEDS: elasticsearch
+      ES_VERSION: v8
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks: [ swe-network ]
     volumes:
       - ./temporalconfig:/etc/temporal/config/dynamicconfig
 
-  # Temporal Admin Tools
+  # =======================
+  # Temporal UI
+  # =======================
   temporal-ui:
+    profiles:
+      - elk
     image: temporalio/ui:${TEMPORAL_UI_VERSION:-2.10.3}
     container_name: temporal-ui
-    depends_on:
-      - temporal
-    environment:
-      - TEMPORAL_ADDRESS=temporal:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:3001
-    networks:
-      - swe-network
     ports:
       - "8081:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3001
+    depends_on: [ temporal ]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks: [ swe-network ]
 
 volumes:
   swe-postgres:
-    driver: local
-  minio-storage: { }
+  swe-mongo:
+  minio-storage:
 
 networks:
   swe-network:
